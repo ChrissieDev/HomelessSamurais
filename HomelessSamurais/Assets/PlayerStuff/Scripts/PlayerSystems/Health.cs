@@ -115,9 +115,13 @@ public class Health : NetworkBehaviour
         isDead = true;
         currentHealth.Value = 0;
         
-        OnDeath?.Invoke();
-        
-        if (destroyOnDeath)
+        // Trigger respawn instead of destroying
+        RespawnManager respawn = GetComponent<RespawnManager>();
+        if (respawn != null)
+        {
+            respawn.TriggerRespawn();
+        }
+        else if (destroyOnDeath)
         {
             Destroy(gameObject, destroyDelay);
         }
@@ -127,20 +131,8 @@ public class Health : NetworkBehaviour
     {
         if (!IsServer) return;
         
-        RespawnClientRpc();
-    }
-    
-    [ClientRpc]
-    void RespawnClientRpc()
-    {
         isDead = false;
-        timeSinceLastDamage = 0f;
-        OnRespawn?.Invoke();
-        
-        if (IsServer)
-        {
-            currentHealth.Value = maxHealth;
-        }
+        currentHealth.Value = maxHealth;
     }
     
     // getters

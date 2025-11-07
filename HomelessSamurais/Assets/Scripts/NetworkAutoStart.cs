@@ -7,6 +7,7 @@ public class NetworkAutoStart : MonoBehaviour
     void Start()
     {
         Debug.Log("NetworkAutoStart: Start() called");
+        Debug.Log($"Current scene: {UnityEngine.SceneManagement.SceneManager.GetActiveScene().name}");
         
         // Check what mode we should start in
         string mode = PlayerPrefs.GetString("NetworkMode", "");
@@ -17,6 +18,9 @@ public class NetworkAutoStart : MonoBehaviour
             Debug.Log("Starting as Host...");
             NetworkManager.Singleton.StartHost();
             Debug.Log("Host started!");
+            
+            // Debug spawn
+            Invoke(nameof(DebugSpawn), 1f);
         }
         else if (mode == "Client")
         {
@@ -37,5 +41,16 @@ public class NetworkAutoStart : MonoBehaviour
         // Clear the saved mode so it doesn't auto-connect next time
         PlayerPrefs.DeleteKey("NetworkMode");
         PlayerPrefs.Save();
+    }
+    
+    void DebugSpawn()
+    {
+        Debug.Log($"Player prefab assigned: {NetworkManager.Singleton.NetworkConfig.PlayerPrefab != null}");
+        Debug.Log($"Connected clients: {NetworkManager.Singleton.ConnectedClientsIds.Count}");
+        Debug.Log($"Local client ID: {NetworkManager.Singleton.LocalClientId}");
+        
+        // Check if player exists
+        var players = FindObjectsOfType<FPController>();
+        Debug.Log($"Players in scene: {players.Length}");
     }
 }

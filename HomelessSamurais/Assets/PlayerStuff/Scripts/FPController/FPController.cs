@@ -44,6 +44,10 @@ public class FPController : NetworkBehaviour
         
         if (IsOwner)
         {
+            // Initialize network position immediately
+            networkPositionXZ.Value = new Vector2(transform.position.x, transform.position.z);
+            networkRotationY.Value = transform.rotation.eulerAngles.y;
+            
             Cursor.lockState = CursorLockMode.Locked;
             
             if (FPCamera != null)
@@ -62,6 +66,16 @@ public class FPController : NetworkBehaviour
         }
         else
         {
+            // Set initial position from network variables
+            if (networkPositionXZ.Value != Vector2.zero)
+            {
+                transform.position = new Vector3(
+                    networkPositionXZ.Value.x,
+                    transform.position.y,
+                    networkPositionXZ.Value.y
+                );
+            }
+            
             if (FPCamera != null)
             {
                 Camera cam = FPCamera.GetComponent<Camera>();
@@ -76,7 +90,7 @@ public class FPController : NetworkBehaviour
                 dashing.SetLocalPlayer(false);
             }
             
-            // Disable CharacterController for remote players
+            // Disable CharacterController for remote players (they use manual positioning)
             if (characterController != null)
             {
                 characterController.enabled = false;
@@ -116,8 +130,10 @@ public class FPController : NetworkBehaviour
             Quaternion targetRotation = Quaternion.Euler(0, networkRotationY.Value, 0);
             transform.rotation = Quaternion.Lerp(transform.rotation, targetRotation, Time.deltaTime * 15f);
             
-            // Apply gravity for remote players too
-            if (!characterController.isGrounded)
+            // Apply gravity for remote players using raycast for ground check
+            bool isGrounded = Physics.Raycast(transform.position, Vector3.down, GroundCheckDistance + 0.1f);
+            
+            if (!isGrounded)
             {
                 velocity.y += Gravity * Time.deltaTime;
                 Vector3 verticalMovement = new Vector3(0, velocity.y, 0) * Time.deltaTime;
