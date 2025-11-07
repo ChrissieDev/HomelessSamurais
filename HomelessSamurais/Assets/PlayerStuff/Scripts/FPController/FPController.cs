@@ -1,8 +1,9 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using Unity.Netcode;
 
-public class FPController : MonoBehaviour
+public class FPController : NetworkBehaviour
 {
     public float WalkSpeed = 5f;
     public float SprintMultiplier = 1.5f;
@@ -19,35 +20,118 @@ public class FPController : MonoBehaviour
     private float verticalRotation = 0f;
     private CharacterController characterController;
     private Dashing dashing;
-    private bool isLocalPlayer = true;
+    
+    // Only sync horizontal position (X and Z)
+    private NetworkVariable<Vector2> networkPositionXZ = new NetworkVariable<Vector2>(
+        default, 
+        NetworkVariableReadPermission.Everyone, 
+        NetworkVariableWritePermission.Owner);
+    
+    private NetworkVariable<float> networkRotationY = new NetworkVariable<float>(
+        default, 
+        NetworkVariableReadPermission.Everyone, 
+        NetworkVariableWritePermission.Owner);
 
     void Start()
     {
         characterController = GetComponent<CharacterController>();
         dashing = GetComponent<Dashing>();
+    }
+
+    public override void OnNetworkSpawn()
+    {
+        base.OnNetworkSpawn();
         
-        // locks cursor for local player
-        if (isLocalPlayer)
+        if (IsOwner)
         {
             Cursor.lockState = CursorLockMode.Locked;
-        }
-        
-        // this disables the camera if ur not a local player
-        if (FPCamera != null && !isLocalPlayer)
-        {
-            Camera cam = FPCamera.GetComponent<Camera>();
-            if (cam != null) cam.enabled = false;
             
-            AudioListener listener = FPCamera.GetComponent<AudioListener>();
-            if (listener != null) listener.enabled = false;
+            if (FPCamera != null)
+            {
+                Camera cam = FPCamera.GetComponent<Camera>();
+                if (cam != null) cam.enabled = true;
+                
+                AudioListener listener = FPCamera.GetComponent<AudioListener>();
+                if (listener != null) listener.enabled = true;
+            }
+            
+            if (dashing != null)
+            {
+                dashing.SetLocalPlayer(true);
+            }
+        }
+        else
+        {
+            if (FPCamera != null)
+            {
+                Camera cam = FPCamera.GetComponent<Camera>();
+                if (cam != null) cam.enabled = false;
+                
+                AudioListener listener = FPCamera.GetComponent<AudioListener>();
+                if (listener != null) listener.enabled = false;
+            }
+            
+            if (dashing != null)
+            {
+                dashing.SetLocalPlayer(false);
+            }
+            
+            // Disable CharacterController for remote players
+            if (characterController != null)
+            {
+                characterController.enabled = false;
+            }
         }
     }
 
     void Update()
     {
-        // process input for local player
-        if (!isLocalPlayer) return;
-
+        // stops processing movement if not connected to network yet
+        if (!NetworkManager.Singleton.IsClient && !NetworkManager.Singleton.IsServer)
+        {
+            return;
+        }
+        
+        if (IsOwner)
+        {
+            // Owner handles input and movement
+            HandleMovement();
+            HandleCameraRotation();
+            
+            // Update network variables - only horizontal position
+            networkPositionXZ.Value = new Vector2(transform.position.x, transform.position.z);
+            networkRotationY.Value = transform.rotation.eulerAngles.y;
+        }
+        else
+        {
+            // Non-owners interpolate to synced horizontal position only
+            Vector3 targetPos = new Vector3(
+                networkPositionXZ.Value.x, 
+                transform.position.y,  // Keep current Y (let gravity work locally)
+                networkPositionXZ.Value.y
+            );
+            
+            transform.position = Vector3.Lerp(transform.position, targetPos, Time.deltaTime * 15f);
+            
+            Quaternion targetRotation = Quaternion.Euler(0, networkRotationY.Value, 0);
+            transform.rotation = Quaternion.Lerp(transform.rotation, targetRotation, Time.deltaTime * 15f);
+            
+            // Apply gravity for remote players too
+            if (!characterController.isGrounded)
+            {
+                velocity.y += Gravity * Time.deltaTime;
+                Vector3 verticalMovement = new Vector3(0, velocity.y, 0) * Time.deltaTime;
+                transform.position += verticalMovement;
+            }
+            else
+            {
+                velocity.y = -2f;
+            }
+        }
+    }
+    
+    void HandleMovement()
+    {
         float horizontalMovement = Input.GetAxisRaw("Horizontal");
         float verticalMovement = Input.GetAxisRaw("Vertical");
 
@@ -55,39 +139,50 @@ public class FPController : MonoBehaviour
         moveDirection.Normalize();
 
         float speed = WalkSpeed;
-        if(Input.GetAxis("Sprint") > 0)
+        if (Input.GetKey(KeyCode.LeftShift))
         {
             speed *= SprintMultiplier;
         }
 
-        // only apply normal movement if not dashing
+        // Handle horizontal movement
         if (dashing == null || !dashing.IsDashing())
         {
             characterController.Move(moveDirection * speed * Time.deltaTime);
         }
 
-        if(Input.GetButtonDown("Jump") && IsGrounded())
+        // Handle vertical movement (gravity & jumping)
+        if (characterController.isGrounded)
         {
-            velocity.y = Mathf.Sqrt(JumpForce * -2f * Gravity);
+            if (velocity.y < 0)
+            {
+                velocity.y = -2f; // Keep grounded
+            }
+            
+            if (Input.GetButtonDown("Jump"))
+            {
+                velocity.y = Mathf.Sqrt(JumpForce * -2f * Gravity);
+            }
         }
 
         velocity.y += Gravity * Time.deltaTime;
         
-        // combine gravity with dash velocity (during dash or decay)
-        Vector3 finalMovement = velocity * Time.deltaTime;
+        // Apply vertical movement + dash
+        Vector3 verticalMovement2 = new Vector3(0, velocity.y, 0) * Time.deltaTime;
+        
         if (dashing != null && (dashing.IsDashing() || dashing.IsDecaying()))
         {
-            finalMovement += dashing.GetDashVelocity() * Time.deltaTime;
+            Vector3 dashVel = dashing.GetDashVelocity();
+            characterController.Move(dashVel * Time.deltaTime + verticalMovement2);
         }
-        
-        characterController.Move(finalMovement);
-
-        HandleCameraRotation();
+        else
+        {
+            characterController.Move(verticalMovement2);
+        }
     }
 
     void HandleCameraRotation()
     {
-        if(FPCamera != null)
+        if (FPCamera != null)
         {
             float mouseX = Input.GetAxis("Mouse X") * LookSensitivityX;
             float mouseY = Input.GetAxis("Mouse Y") * LookSensitivityY;
@@ -99,34 +194,9 @@ public class FPController : MonoBehaviour
             transform.Rotate(Vector3.up * mouseX);
         }
     }
-
-    bool IsGrounded()
-    {
-        if (Physics.Raycast(transform.position, Vector3.down, GroundCheckDistance + 0.1f))
-        {
-            return true;
-        }
-        return false;
-    }
     
-    // public method to reset vertical velocity (called by dashing)
     public void ResetVerticalVelocity()
     {
         velocity.y = 0f;
-    }
-    
-    public void SetLocalPlayer(bool isLocal)
-    {
-        isLocalPlayer = isLocal;
-        
-        if (dashing != null)
-        {
-            dashing.SetLocalPlayer(isLocal);
-        }
-        
-        if (isLocal)
-        {
-            Cursor.lockState = CursorLockMode.Locked;
-        }
     }
 }

@@ -1,16 +1,24 @@
 using UnityEngine;
+using Unity.Netcode;
 
-public class MeleeWeapon : MonoBehaviour
+public class MeleeWeapon : NetworkBehaviour
 {
     [Header("Weapon Settings")]
     public float damage = 25f;
     public float attackCooldown = 1f;
-    public float attackDuration = 0.3f; // should match your animation length
+    public float attackStartupDelay = 0.3f; // 300ms delay before hitbox activates
+    public float attackDuration = 0.6f; // 600ms hitbox active duration
     public LayerMask hitLayers;
     
     [Header("References")]
-    public Animator weaponAnimator; // animator on the pipe
-    public Collider weaponCollider; // trigger collider on the pipe
+    public Animator weaponAnimator;
+    public Collider weaponCollider;
+    
+    [Header("Audio")]
+    public AudioSource audioSource;
+    public AudioClip hitSound;
+    public AudioClip blockSound;
+    public AudioClip swingSound;
     
     private bool isAttacking = false;
     private bool canAttack = true;
@@ -18,16 +26,26 @@ public class MeleeWeapon : MonoBehaviour
     
     void Start()
     {
-        // disable collider when not attacking
         if (weaponCollider != null)
         {
             weaponCollider.enabled = false;
+        }
+        
+        if (audioSource == null)
+        {
+            audioSource = GetComponent<AudioSource>();
+            if (audioSource == null)
+            {
+                audioSource = gameObject.AddComponent<AudioSource>();
+            }
         }
     }
     
     void Update()
     {
-        // handle attack input - use Input Manager "Attack" axis
+        // Only allow local player to attack
+        if (!IsOwner) return;
+        
         if (Input.GetButtonDown("Attack") && canAttack && !isAttacking)
         {
             StartAttack();
@@ -40,34 +58,63 @@ public class MeleeWeapon : MonoBehaviour
         canAttack = false;
         hasHitThisSwing = false;
         
-        // trigger animation
-        if (weaponAnimator != null)
+        // Tell server to play animation for everyone
+        if (IsOwner)
         {
-            weaponAnimator.SetTrigger("Swing");
-            Debug.Log("Swing animation triggered");
+            StartAttackServerRpc();
         }
         
-        // enable weapon collider
+        // Enable hitbox after 300ms delay (also plays swing sound)
+        Invoke(nameof(EnableHitbox), attackStartupDelay);
+        
+        // Disable hitbox after delay + duration (300ms + 600ms = 900ms)
+        Invoke(nameof(DisableHitbox), attackStartupDelay + attackDuration);
+    }
+    
+    void EnableHitbox()
+    {
         if (weaponCollider != null)
         {
             weaponCollider.enabled = true;
         }
         
-        // end attack after duration
-        Invoke(nameof(EndAttack), attackDuration);
+        // Play swing sound when hitbox activates (at 300ms)
+        if (swingSound != null && audioSource != null)
+        {
+            audioSource.PlayOneShot(swingSound);
+        }
+    }
+    
+    void DisableHitbox()
+    {
+        if (weaponCollider != null)
+        {
+            weaponCollider.enabled = false;
+        }
+        
+        EndAttack();
+    }
+    
+    [ServerRpc]
+    void StartAttackServerRpc()
+    {
+        // Play animation for all clients
+        StartAttackClientRpc();
+    }
+    
+    [ClientRpc]
+    void StartAttackClientRpc()
+    {
+        if (weaponAnimator != null)
+        {
+            weaponAnimator.SetTrigger("Swing");
+        }
     }
     
     void EndAttack()
     {
         isAttacking = false;
         
-        // disable weapon collider
-        if (weaponCollider != null)
-        {
-            weaponCollider.enabled = false;
-        }
-        
-        // start cooldown
         Invoke(nameof(ResetAttack), attackCooldown);
     }
     
@@ -76,34 +123,69 @@ public class MeleeWeapon : MonoBehaviour
         canAttack = true;
     }
     
-    void OnTriggerEnter(Collider other)
+    public void OnWeaponHit(Collider other)
     {
-        // only hit once per swing
         if (!isAttacking || hasHitThisSwing) return;
         
-        // check layer
-        if (((1 << other.gameObject.layer) & hitLayers) == 0) return;
+        int layerCheck = (1 << other.gameObject.layer) & hitLayers;
+        if (layerCheck == 0) return;
         
-        // check if we hit their pipe (blocking)
+        // Check if we hit their pipe (blocking)
         if (other.gameObject.name == "Pipe")
         {
             Block block = other.GetComponentInParent<Block>();
             if (block != null && block.IsBlocking())
             {
-                block.OnBlockedAttack(damage);
+                block.OnBlockedAttack(damage, transform.position);
                 hasHitThisSwing = true;
-                Debug.Log("Hit blocked by pipe!");
+                
+                if (blockSound != null && audioSource != null)
+                {
+                    audioSource.PlayOneShot(blockSound);
+                }
                 return;
             }
         }
         
-        // deal damage to player body
+        // Try to damage DummyEnemy
+        DummyEnemy dummy = other.GetComponent<DummyEnemy>();
+        if (dummy != null)
+        {
+            dummy.TakeDamage(damage);
+            hasHitThisSwing = true;
+            
+            if (hitSound != null && audioSource != null)
+            {
+                audioSource.PlayOneShot(hitSound);
+            }
+            return;
+        }
+        
+        // Try to damage player - send to server
         Health health = other.GetComponentInParent<Health>();
         if (health != null)
         {
-            health.TakeDamage(damage);
+            // Request server to deal damage
+            DealDamageServerRpc(health.NetworkObjectId, damage);
             hasHitThisSwing = true;
-            Debug.Log("Hit player! Damage: " + damage);
+            
+            if (hitSound != null && audioSource != null)
+            {
+                audioSource.PlayOneShot(hitSound);
+            }
+        }
+    }
+    
+    [ServerRpc]
+    void DealDamageServerRpc(ulong targetNetworkId, float damageAmount)
+    {
+        if (NetworkManager.Singleton.SpawnManager.SpawnedObjects.TryGetValue(targetNetworkId, out NetworkObject targetObject))
+        {
+            Health health = targetObject.GetComponent<Health>();
+            if (health != null)
+            {
+                health.TakeDamage(damageAmount);
+            }
         }
     }
     

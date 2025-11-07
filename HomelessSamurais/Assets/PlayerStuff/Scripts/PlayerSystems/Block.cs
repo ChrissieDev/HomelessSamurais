@@ -1,37 +1,84 @@
 using UnityEngine;
+using Unity.Netcode;
 
-public class Block : MonoBehaviour
+public class Block : NetworkBehaviour
 {
     [Header("Block Settings")]
-    public float blockDamageReduction = 0.8f; // blocks 80% of damage
+    public float blockDamageReduction = 0.8f;
     
     [Header("Perfect Block")]
     public bool enablePerfectBlock = true;
-    public float perfectBlockWindow = 0.2f; // seconds to trigger perfect block
+    public float perfectBlockWindow = 0.2f;
+    
+    [Header("Knockback")]
+    public float knockbackForce = 5f;
+    public float knockbackUpwardForce = 2f;
+    public float knockbackDuration = 0.2f;
     
     [Header("References")]
-    public Animator combatAnimator; // same animator as MeleeWeapon - has both Swing and Block triggers
+    public Animator combatAnimator;
     
-    private bool isBlocking = false;
+    private NetworkVariable<bool> isBlocking = new NetworkVariable<bool>(false, 
+        NetworkVariableReadPermission.Everyone, 
+        NetworkVariableWritePermission.Owner);
+    
     private float blockStartTime;
-    private bool isLocalPlayer = true;
+    private CharacterController characterController;
+    private Vector3 knockbackVelocity;
+    private float knockbackEndTime;
+    
+    void Start()
+    {
+        characterController = GetComponent<CharacterController>();
+    }
+    
+    public override void OnNetworkSpawn()
+    {
+        base.OnNetworkSpawn();
+        
+        // Subscribe to blocking state changes
+        isBlocking.OnValueChanged += OnBlockingChanged;
+    }
+    
+    public override void OnNetworkDespawn()
+    {
+        isBlocking.OnValueChanged -= OnBlockingChanged;
+        base.OnNetworkDespawn();
+    }
+    
+    void OnBlockingChanged(bool previousValue, bool newValue)
+    {
+        // Play block animation for all clients when blocking state changes
+        if (newValue && combatAnimator != null)
+        {
+            combatAnimator.SetTrigger("Block");
+        }
+    }
     
     void Update()
     {
-        // only process input for local player
-        if (!isLocalPlayer) return;
+        // Only owner processes input
+        if (!IsOwner) return;
         
-        // handle block input using Input Manager - hold to block
+        // Apply knockback (including vertical movement)
+        if (Time.time < knockbackEndTime)
+        {
+            // Apply gravity to knockback velocity
+            knockbackVelocity.y += Physics.gravity.y * Time.deltaTime;
+            characterController.Move(knockbackVelocity * Time.deltaTime);
+        }
+        
+        // Handle block input
         if (Input.GetButton("Block"))
         {
-            if (!isBlocking)
+            if (!isBlocking.Value)
             {
                 StartBlock();
             }
         }
         else
         {
-            if (isBlocking)
+            if (isBlocking.Value)
             {
                 EndBlock();
             }
@@ -40,44 +87,29 @@ public class Block : MonoBehaviour
     
     void StartBlock()
     {
-        isBlocking = true;
+        isBlocking.Value = true;
         blockStartTime = Time.time;
-        
-        // set blocking state in animator
-        if (combatAnimator != null)
-        {
-            combatAnimator.SetBool("IsBlocking", true);
-        }
     }
     
     void EndBlock()
     {
-        isBlocking = false;
-        
-        // clear blocking state in animator
-        if (combatAnimator != null)
-        {
-            combatAnimator.SetBool("IsBlocking", false);
-        }
+        isBlocking.Value = false;
     }
     
-    public void OnBlockedAttack(float incomingDamage)
+    public void OnBlockedAttack(float incomingDamage, Vector3 attackerPosition)
     {
-        if (!isBlocking) return;
+        if (!isBlocking.Value) return;
         
         Debug.Log("OnBlockedAttack called. Incoming damage: " + incomingDamage);
         
-        // check for perfect block
         bool isPerfectBlock = enablePerfectBlock && (Time.time - blockStartTime) <= perfectBlockWindow;
         
         if (isPerfectBlock)
         {
-            // perfect block does no damage
             Debug.Log("Perfect Block!");
         }
         else
         {
-            // normal block reduces damage
             float reducedDamage = incomingDamage * (1f - blockDamageReduction);
             Debug.Log("Normal block. Reduced damage: " + reducedDamage);
             
@@ -87,12 +119,16 @@ public class Block : MonoBehaviour
                 health.TakeDamage(reducedDamage);
             }
         }
+        
+        // Apply knockback away from attacker with upward force
+        Vector3 knockbackDirection = (transform.position - attackerPosition).normalized;
+        knockbackDirection.y = 0;
+        
+        knockbackVelocity = knockbackDirection * knockbackForce;
+        knockbackVelocity.y = knockbackUpwardForce;
+        
+        knockbackEndTime = Time.time + knockbackDuration;
     }
     
-    public bool IsBlocking() => isBlocking;
-    
-    public void SetLocalPlayer(bool isLocal)
-    {
-        isLocalPlayer = isLocal;
-    }
+    public bool IsBlocking() => isBlocking.Value;
 }

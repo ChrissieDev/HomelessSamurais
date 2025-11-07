@@ -1,7 +1,8 @@
 using UnityEngine;
 using UnityEngine.Events;
+using Unity.Netcode;
 
-public class Health : MonoBehaviour
+public class Health : NetworkBehaviour
 {
     [Header("Health Settings")]
     public float maxHealth = 100f;
@@ -19,19 +20,52 @@ public class Health : MonoBehaviour
     public UnityEvent OnDeath;
     public UnityEvent OnRespawn;
     
-    private float currentHealth;
+    private NetworkVariable<float> currentHealth = new NetworkVariable<float>(
+        default,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
+    
     private float timeSinceLastDamage;
     private bool isDead = false;
     
-    void Start()
+    public override void OnNetworkSpawn()
     {
-        currentHealth = maxHealth;
+        base.OnNetworkSpawn();
+        
+        if (IsServer)
+        {
+            currentHealth.Value = maxHealth;
+        }
+        
+        // Subscribe to health changes on all clients
+        currentHealth.OnValueChanged += OnHealthValueChanged;
+    }
+    
+    public override void OnNetworkDespawn()
+    {
+        currentHealth.OnValueChanged -= OnHealthValueChanged;
+        base.OnNetworkDespawn();
+    }
+    
+    void OnHealthValueChanged(float previousValue, float newValue)
+    {
+        OnHealthChanged?.Invoke(newValue);
+        
+        if (newValue <= 0 && !isDead)
+        {
+            isDead = true;
+            OnDeath?.Invoke();
+        }
     }
     
     void Update()
     {
+        // Only server handles regeneration
+        if (!IsServer) return;
+        
         // handle regeneration
-        if (canRegenerate && !isDead && currentHealth < maxHealth)
+        if (canRegenerate && !isDead && currentHealth.Value < maxHealth)
         {
             timeSinceLastDamage += Time.deltaTime;
             
@@ -44,32 +78,42 @@ public class Health : MonoBehaviour
     
     public void TakeDamage(float damage)
     {
+        // Only server can modify health
+        if (!IsServer) return;
         if (isDead) return;
         
-        currentHealth -= damage;
-        timeSinceLastDamage = 0f; // reset regen timer
+        currentHealth.Value -= damage;
+        timeSinceLastDamage = 0f;
         
-        OnDamageTaken?.Invoke(damage);
-        OnHealthChanged?.Invoke(currentHealth);
+        // Notify clients about damage
+        NotifyDamageTakenClientRpc(damage);
         
-        if (currentHealth <= 0)
+        if (currentHealth.Value <= 0)
         {
             Die();
         }
     }
     
+    [ClientRpc]
+    void NotifyDamageTakenClientRpc(float damage)
+    {
+        OnDamageTaken?.Invoke(damage);
+    }
+    
     public void Heal(float amount)
     {
+        if (!IsServer) return;
         if (isDead) return;
         
-        currentHealth = Mathf.Min(currentHealth + amount, maxHealth);
-        OnHealthChanged?.Invoke(currentHealth);
+        currentHealth.Value = Mathf.Min(currentHealth.Value + amount, maxHealth);
     }
     
     void Die()
     {
+        if (!IsServer) return;
+        
         isDead = true;
-        currentHealth = 0;
+        currentHealth.Value = 0;
         
         OnDeath?.Invoke();
         
@@ -81,17 +125,27 @@ public class Health : MonoBehaviour
     
     public void Respawn()
     {
-        isDead = false;
-        currentHealth = maxHealth;
-        timeSinceLastDamage = 0f;
+        if (!IsServer) return;
         
+        RespawnClientRpc();
+    }
+    
+    [ClientRpc]
+    void RespawnClientRpc()
+    {
+        isDead = false;
+        timeSinceLastDamage = 0f;
         OnRespawn?.Invoke();
-        OnHealthChanged?.Invoke(currentHealth);
+        
+        if (IsServer)
+        {
+            currentHealth.Value = maxHealth;
+        }
     }
     
     // getters
-    public float GetCurrentHealth() => currentHealth;
+    public float GetCurrentHealth() => currentHealth.Value;
     public float GetMaxHealth() => maxHealth;
-    public float GetHealthPercentage() => currentHealth / maxHealth;
+    public float GetHealthPercentage() => currentHealth.Value / maxHealth;
     public bool IsDead() => isDead;
 }
