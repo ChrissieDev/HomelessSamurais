@@ -108,7 +108,7 @@ public class Health : NetworkBehaviour
         currentHealth.Value = Mathf.Min(currentHealth.Value + amount, maxHealth);
     }
     
-    void Die()
+    void Die()  
     {
         if (!IsServer) return;
         

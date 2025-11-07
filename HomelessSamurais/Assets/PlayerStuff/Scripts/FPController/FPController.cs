@@ -21,8 +21,8 @@ public class FPController : NetworkBehaviour
     private CharacterController characterController;
     private Dashing dashing;
     
-    // Only sync horizontal position (X and Z)
-    private NetworkVariable<Vector2> networkPositionXZ = new NetworkVariable<Vector2>(
+    // Sync full position including Y
+    private NetworkVariable<Vector3> networkPosition = new NetworkVariable<Vector3>(
         default, 
         NetworkVariableReadPermission.Everyone, 
         NetworkVariableWritePermission.Owner);
@@ -45,7 +45,7 @@ public class FPController : NetworkBehaviour
         if (IsOwner)
         {
             // Initialize network position immediately
-            networkPositionXZ.Value = new Vector2(transform.position.x, transform.position.z);
+            networkPosition.Value = transform.position;
             networkRotationY.Value = transform.rotation.eulerAngles.y;
             
             Cursor.lockState = CursorLockMode.Locked;
@@ -67,13 +67,9 @@ public class FPController : NetworkBehaviour
         else
         {
             // Set initial position from network variables
-            if (networkPositionXZ.Value != Vector2.zero)
+            if (networkPosition.Value != Vector3.zero)
             {
-                transform.position = new Vector3(
-                    networkPositionXZ.Value.x,
-                    transform.position.y,
-                    networkPositionXZ.Value.y
-                );
+                transform.position = networkPosition.Value;
             }
             
             if (FPCamera != null)
@@ -90,7 +86,7 @@ public class FPController : NetworkBehaviour
                 dashing.SetLocalPlayer(false);
             }
             
-            // Disable CharacterController for remote players (they use manual positioning)
+            // Disable CharacterController for remote players
             if (characterController != null)
             {
                 characterController.enabled = false;
@@ -100,7 +96,6 @@ public class FPController : NetworkBehaviour
 
     void Update()
     {
-        // stops processing movement if not connected to network yet
         if (!NetworkManager.Singleton.IsClient && !NetworkManager.Singleton.IsServer)
         {
             return;
@@ -112,37 +107,17 @@ public class FPController : NetworkBehaviour
             HandleMovement();
             HandleCameraRotation();
             
-            // Update network variables - only horizontal position
-            networkPositionXZ.Value = new Vector2(transform.position.x, transform.position.z);
+            // Update network variables with full position
+            networkPosition.Value = transform.position;
             networkRotationY.Value = transform.rotation.eulerAngles.y;
         }
         else
         {
-            // Non-owners interpolate to synced horizontal position only
-            Vector3 targetPos = new Vector3(
-                networkPositionXZ.Value.x, 
-                transform.position.y,  // Keep current Y (let gravity work locally)
-                networkPositionXZ.Value.y
-            );
-            
-            transform.position = Vector3.Lerp(transform.position, targetPos, Time.deltaTime * 15f);
+            // Non-owners smoothly interpolate to synced position
+            transform.position = Vector3.Lerp(transform.position, networkPosition.Value, Time.deltaTime * 10f);
             
             Quaternion targetRotation = Quaternion.Euler(0, networkRotationY.Value, 0);
-            transform.rotation = Quaternion.Lerp(transform.rotation, targetRotation, Time.deltaTime * 15f);
-            
-            // Apply gravity for remote players using raycast for ground check
-            bool isGrounded = Physics.Raycast(transform.position, Vector3.down, GroundCheckDistance + 0.1f);
-            
-            if (!isGrounded)
-            {
-                velocity.y += Gravity * Time.deltaTime;
-                Vector3 verticalMovement = new Vector3(0, velocity.y, 0) * Time.deltaTime;
-                transform.position += verticalMovement;
-            }
-            else
-            {
-                velocity.y = -2f;
-            }
+            transform.rotation = Quaternion.Lerp(transform.rotation, targetRotation, Time.deltaTime * 10f);
         }
     }
     
@@ -171,7 +146,7 @@ public class FPController : NetworkBehaviour
         {
             if (velocity.y < 0)
             {
-                velocity.y = -2f; // Keep grounded
+                velocity.y = -2f;
             }
             
             if (Input.GetButtonDown("Jump"))
